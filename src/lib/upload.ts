@@ -1,39 +1,64 @@
-// Uploader abstraction (file.io now, S3 later)
-import axios from "axios";
+// src/lib/upload.ts
 
 export type UploadOptions = {
+  /** Expiry duration: e.g., "30m", "1h", "24h", "7d" */
   expires?: "30m" | "1h" | "24h" | "7d";
-  maxDownloads?: 1 | 20; // 1 for single, ~20 for small groups
+  /** Download cap: 1 (single) or ~20 (small group) */
+  maxDownloads?: 1 | 20;
+  /** Whether file auto-deletes after expiry or final download (true by default server-side) */
+  autoDelete?: boolean;
 };
 
 export type UploadResult = {
-  link: string; // the share URL
-  expiry?: string; // echo back what we requested
-  maxDownloads?: number;
+  success: boolean;
+  link: string;
+  key?: string;
+  expires?: string; // RFC3339 timestamp from API
+  maxDownloads?: number; // echoed back by API
+  message?: string;
 };
 
 export async function uploadToFileIO(
   file: File,
   opts: UploadOptions
 ): Promise<UploadResult> {
-  const params = new URLSearchParams();
-  if (opts.expires) params.set("expires", opts.expires);
-  if (opts.maxDownloads) params.set("maxDownloads", String(opts.maxDownloads));
-
-  const url = `https://file.io/?${params.toString()}`;
   const form = new FormData();
   form.append("file", file);
 
-  const res = await axios.post(url, form, {
+  if (opts.expires) form.append("expires", opts.expires); // "30m" | "1h" | "24h" | "7d"
+  if (opts.maxDownloads) form.append("maxDownloads", String(opts.maxDownloads));
+  if (opts.autoDelete !== undefined)
+    form.append("autoDelete", String(opts.autoDelete));
+
+  const res = await fetch("https://file.io", {
+    method: "POST",
+    body: form,
+    // Don't set Content-Type for FormData — browser will add the multipart boundary.
     headers: { Accept: "application/json" },
-    // file.io is simple; no auth for anonymous uploads
   });
 
-  // file.io returns shapes like { success, link, ... } when successful
-  if (!res.data?.link) throw new Error("Upload failed.");
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // If server didn't return JSON, surface the raw text for debugging
+    const txt = await res.text().catch(() => "");
+    throw new Error(
+      `file.io non-JSON response (${res.status}): ${txt || res.statusText}`
+    );
+  }
+
+  if (!res.ok || !data?.success || !data?.link) {
+    const msg = data?.message || `file.io error ${res.status}`;
+    throw new Error(msg);
+  }
+
   return {
-    link: res.data.link,
-    expiry: opts.expires,
-    maxDownloads: opts.maxDownloads,
+    success: true,
+    link: data.link,
+    key: data.key,
+    expires: data.expires,
+    maxDownloads: data.maxDownloads,
+    message: data.message,
   };
 }

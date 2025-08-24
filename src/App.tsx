@@ -55,9 +55,11 @@ export default function App() {
 
       const opts: UploadOptions = { expires, maxDownloads };
       const { link } = await uploadToFileIO(file, opts);
+
       setLink(link);
       setPhase("done");
     } catch (e: any) {
+      console.error("Upload failed:", e); // <-- add this line
       setError(e?.message ?? "Upload error");
       setPhase("error");
     }
