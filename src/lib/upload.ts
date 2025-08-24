@@ -18,47 +18,63 @@ export type UploadResult = {
   message?: string;
 };
 
+// Alternative: Try tmpfiles.org which is very browser-friendly
 export async function uploadToFileIO(
   file: File,
   opts: UploadOptions
 ): Promise<UploadResult> {
+  console.log("Starting upload to tmpfiles.org...", {
+    fileName: file.name,
+    fileSize: file.size,
+    options: opts,
+  });
+
   const form = new FormData();
   form.append("file", file);
 
-  if (opts.expires) form.append("expires", opts.expires); // "30m" | "1h" | "24h" | "7d"
-  if (opts.maxDownloads) form.append("maxDownloads", String(opts.maxDownloads));
-  if (opts.autoDelete !== undefined)
-    form.append("autoDelete", String(opts.autoDelete));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-  const res = await fetch("https://file.io", {
-    method: "POST",
-    body: form,
-    // Don't set Content-Type for FormData — browser will add the multipart boundary.
-    headers: { Accept: "application/json" },
-  });
-
-  let data: any = null;
   try {
-    data = await res.json();
-  } catch {
-    // If server didn't return JSON, surface the raw text for debugging
-    const txt = await res.text().catch(() => "");
-    throw new Error(
-      `file.io non-JSON response (${res.status}): ${txt || res.statusText}`
-    );
-  }
+    const res = await fetch("https://tmpfiles.org/api/v1/upload", {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
 
-  if (!res.ok || !data?.success || !data?.link) {
-    const msg = data?.message || `file.io error ${res.status}`;
-    throw new Error(msg);
-  }
+    clearTimeout(timeoutId);
+    console.log("Response status:", res.status);
 
-  return {
-    success: true,
-    link: data.link,
-    key: data.key,
-    expires: data.expires,
-    maxDownloads: data.maxDownloads,
-    message: data.message,
-  };
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      console.error("Upload failed:", res.status, errorText);
+      throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    console.log("Response data:", data);
+
+    if (!data?.data?.url) {
+      throw new Error("Invalid response from upload service");
+    }
+
+    const link = data.data.url;
+    console.log("Upload successful:", link);
+
+    return {
+      success: true,
+      link: link,
+      expires: opts.expires,
+      maxDownloads: opts.maxDownloads,
+    };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    console.error("Upload error:", error);
+
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Upload timed out after 30 seconds");
+    }
+
+    throw error;
+  }
 }
